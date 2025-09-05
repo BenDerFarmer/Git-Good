@@ -2,20 +2,26 @@ package main
 
 import (
 	_ "embed"
+	"fmt"
 	"io"
 	"log"
-	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/creack/pty"
 	"github.com/gliderlabs/ssh"
-	"github.com/pkg/sftp"
 
 	gossh "golang.org/x/crypto/ssh"
 )
 
 //go:embed keys/hostkey
-var hostkey []byte
+var hostKey []byte
+
+const (
+	serverName    = "Git Good"
+	serverVersion = "v.0.0.1"
+	reposDir      = "./repos/"
+)
 
 func main() {
 
@@ -25,26 +31,37 @@ func main() {
 
 	s := &ssh.Server{
 		Addr:             ":22",
+		Version:          serverName + " " + serverVersion,
 		PublicKeyHandler: publicKeyOption,
 		Handler:          sessionHandler,
-		SubsystemHandlers: map[string]ssh.SubsystemHandler{
-			"sftp": SftpHandler,
-		},
 	}
 
-	signer, err := gossh.ParsePrivateKey(hostkey)
+	signer, err := gossh.ParsePrivateKey(hostKey)
 	if err != nil {
 		log.Fatalf("Failed to parse host key: %v", err)
 	}
 
 	s.AddHostKey(signer)
 
+	log.Println(serverName + " - " + serverVersion)
+	log.Println("listen on " + s.Addr)
+
 	log.Fatal(s.ListenAndServe())
 
-	log.Println("listen on " + s.Addr)
 }
 
 func sessionHandler(s ssh.Session) {
+	if len(s.Command()) == 2 {
+		err := gitHandler(s)
+		if err != nil {
+			log.Println(err)
+		}
+	} else {
+		cliHandler(s)
+	}
+}
+
+func cliHandler(s ssh.Session) {
 	master, slave, err := pty.Open()
 	if err != nil {
 		io.WriteString(s, "failed to open pty: "+err.Error()+"\n")
@@ -52,7 +69,7 @@ func sessionHandler(s ssh.Session) {
 	}
 	defer master.Close()
 	defer slave.Close()
-	io.WriteString(s, "Git Good - v.0.0.1\nEnter command (or 'exit' to quit)\n> ")
+	io.WriteString(s, serverName+" - "+serverVersion+"\nEnter command (or 'exit' to quit)\n> ")
 
 	go func() {
 		buf := make([]byte, 8192)
@@ -76,35 +93,43 @@ func sessionHandler(s ssh.Session) {
 	go func() { _, _ = io.Copy(master, s) }()
 	// master -> session (what was written to slave and echoed appears here)
 	_, _ = io.Copy(s, master)
-
 }
 
-func SftpHandler(sess ssh.Session) {
-	jail := "repos"
-	if err := os.MkdirAll(jail, 0o755); err != nil {
-		log.Printf("mkdir jail: %v", err)
-		_ = sess.Exit(1)
-		return
+func gitHandler(s ssh.Session) error {
+	command := s.Command()[0]
+	repoPath := s.Command()[1]
+
+	if !isVaildCommand(command) {
+		return fmt.Errorf("Invaild command")
 	}
 
-	jh := &jailedFS{root: jail}
-
-	rs := sftp.NewRequestServer(
-		sess,
-		sftp.Handlers{
-			FileGet:  jh,
-			FilePut:  jh,
-			FileCmd:  jh,
-			FileList: jh,
-		},
-		sftp.WithStartDirectory("/"),
-	)
-
-	if err := rs.Serve(); err == io.EOF {
-		_ = rs.Close()
-	} else if err != nil {
-		log.Printf("sftp serve error: %v", err)
+	var err error
+	repoPath, err = sanitizeRepoArg(repoPath)
+	if err != nil {
+		return err
 	}
+
+	if !isVaildRepoPath(repoPath) {
+		return fmt.Errorf("Invaild Repo User or Name")
+	}
+
+	args := []string{repoPath}
+
+	c := exec.Command(command, args...)
+	c.Dir = reposDir
+	c.Stdin = s
+	c.Stdout = s
+	c.Stderr = s
+	c.Env = []string{}
+
+	fmt.Printf("command: %v\n", command)
+	fmt.Printf("path: %v\n", repoPath)
+
+	if err := c.Run(); err != nil {
+		return fmt.Errorf("git command failed: %w", err)
+	}
+
+	return nil
 }
 
 func executeCommand(rawcommand string, s ssh.Session) string {
