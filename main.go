@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"io"
 	"log"
+	"os"
 	"strings"
 
 	"github.com/creack/pty"
@@ -23,7 +24,7 @@ func main() {
 	})
 
 	s := &ssh.Server{
-		Addr:             ":2222",
+		Addr:             ":22",
 		PublicKeyHandler: publicKeyOption,
 		Handler:          sessionHandler,
 		SubsystemHandlers: map[string]ssh.SubsystemHandler{
@@ -39,6 +40,8 @@ func main() {
 	s.AddHostKey(signer)
 
 	log.Fatal(s.ListenAndServe())
+
+	log.Println("listen on " + s.Addr)
 }
 
 func sessionHandler(s ssh.Session) {
@@ -77,19 +80,30 @@ func sessionHandler(s ssh.Session) {
 }
 
 func SftpHandler(sess ssh.Session) {
-	serverOptions := []sftp.ServerOption{
-		sftp.WithServerWorkingDirectory("repos"),
-	}
-	server, err := sftp.NewServer(
-		sess,
-		serverOptions...,
-	)
-	if err != nil {
-		log.Printf("sftp server init error: %s\n", err)
+	jail := "repos"
+	if err := os.MkdirAll(jail, 0o755); err != nil {
+		log.Printf("mkdir jail: %v", err)
+		_ = sess.Exit(1)
 		return
 	}
-	if err := server.Serve(); err == io.EOF {
-		server.Close()
+
+	jh := &jailedFS{root: jail}
+
+	rs := sftp.NewRequestServer(
+		sess,
+		sftp.Handlers{
+			FileGet:  jh,
+			FilePut:  jh,
+			FileCmd:  jh,
+			FileList: jh,
+		},
+		sftp.WithStartDirectory("/"),
+	)
+
+	if err := rs.Serve(); err == io.EOF {
+		_ = rs.Close()
+	} else if err != nil {
+		log.Printf("sftp serve error: %v", err)
 	}
 }
 
