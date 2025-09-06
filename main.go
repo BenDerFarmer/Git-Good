@@ -99,18 +99,18 @@ func gitHandler(s ssh.Session) error {
 	command := s.Command()[0]
 	repoPath := s.Command()[1]
 
-	if !isVaildCommand(command) {
+	if !isValidCommand(command) {
 		return fmt.Errorf("Invaild command")
+	}
+
+	if !isValidRepoPath(repoPath) {
+		return fmt.Errorf("Invaild Repo User or Name")
 	}
 
 	var err error
 	repoPath, err = sanitizeRepoArg(repoPath)
 	if err != nil {
 		return err
-	}
-
-	if !isVaildRepoPath(repoPath) {
-		return fmt.Errorf("Invaild Repo User or Name")
 	}
 
 	args := []string{repoPath}
@@ -121,9 +121,6 @@ func gitHandler(s ssh.Session) error {
 	c.Stdout = s
 	c.Stderr = s
 	c.Env = []string{}
-
-	fmt.Printf("command: %v\n", command)
-	fmt.Printf("path: %v\n", repoPath)
 
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("git command failed: %w", err)
@@ -144,7 +141,6 @@ func executeCommand(rawcommand string, s ssh.Session) string {
 			return "Usage:\ncreate (USERNAME/)REPONAME"
 		}
 
-		// check if it contains invaild chars
 		var repoUser string
 		var repoName string
 
@@ -155,6 +151,14 @@ func executeCommand(rawcommand string, s ssh.Session) string {
 		} else {
 			repoUser = s.User()
 			repoName = command[1]
+		}
+
+		if !isValidRepoNameOrUser(repoUser) {
+			return "Error: Invaild Username"
+		}
+
+		if !isValidRepoNameOrUser(repoName) {
+			return "Error: Invaild repo name"
 		}
 
 		if err := createRepo(repoUser, repoName); err != nil {
